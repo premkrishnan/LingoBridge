@@ -79,9 +79,9 @@ TEMP_REPLY_M4A = Path("temp") / "reply.m4a"
 
 # ── Whisper (Speech-to-Text) ──────────────────────────────────
 
-# large-v3 gives the best Mandarin accuracy of all Whisper sizes.
-# Runs in ~2-4s per sentence on M4 CPU — fast enough for real-time.
-WHISPER_MODEL = "large-v3"
+# large-v3-turbo is a distilled version of large-v3 — same accuracy
+# for Mandarin, roughly 3x faster on CPU. No other changes needed.
+WHISPER_MODEL = "large-v3-turbo"
 
 # Mac M4: faster-whisper does not support Apple Metal (MPS).
 # Use "cpu" here. Switch to "cuda" when migrating to Brahma (ROCm
