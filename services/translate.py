@@ -22,6 +22,7 @@
 #   - config.py → OLLAMA_API_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT_SECS,
 #                 TRANSLATE_TO_ENGLISH_PROMPT, TRANSLATE_TO_MANDARIN_PROMPT
 #   - utils/logger.py
+#   - utils/conversation_memory (optional context passed in by caller)
 #
 # CALLED BY:
 #   - main.py → forward_pipeline(), reply_pipeline()
@@ -38,20 +39,25 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-def translate_to_english(mandarin_text: str) -> str | None:
+def translate_to_english(mandarin_text: str, context: str = "") -> str | None:
     """
     Translates Mandarin Chinese text to English via local Ollama.
 
     Steps:
       1. Format TRANSLATE_TO_ENGLISH_PROMPT with the input text.
-      2. POST the prompt to Ollama with stream=False so the full
+      2. Prepend optional conversation context to the prompt.
+      3. POST the prompt to Ollama with stream=False so the full
          response arrives in one JSON object (not a token stream).
-      3. Extract the response text from the JSON payload.
-      4. Strip whitespace and return the English translation.
+      4. Extract the response text from the JSON payload.
+      5. Strip whitespace and return the English translation.
 
     Args:
         mandarin_text (str): Mandarin text captured from MIL's speech.
                              Example: "你今天吃饭了吗？"
+        context (str): Optional recent exchange history from
+                       conversation_memory.get_context_block().
+                       Pass "" (default) for no context.
+                       Example: "Recent conversation context:\n[1] ..."
 
     Returns:
         str:  English translation. Example: "Did you eat today?"
@@ -62,23 +68,37 @@ def translate_to_english(mandarin_text: str) -> str | None:
         if english:
             send_whatsapp_text(english)
     """
-    prompt = config.TRANSLATE_TO_ENGLISH_PROMPT.format(text=mandarin_text)
+    base_prompt = config.TRANSLATE_TO_ENGLISH_PROMPT.format(text=mandarin_text)
+
+    # Prepend recent conversation context if available.
+    # This lets Qwen3 resolve pronouns like 她 (she) or 那里 (there)
+    # by referring to earlier exchanges in the same session.
+    if context:
+        prompt = context + "\n\n" + base_prompt
+    else:
+        prompt = base_prompt
+
     return _call_ollama(prompt, label="Mandarin→English")
 
 
-def translate_to_mandarin(english_text: str) -> str | None:
+def translate_to_mandarin(english_text: str, context: str = "") -> str | None:
     """
     Translates English text to Mandarin Chinese via local Ollama.
 
     Steps:
       1. Format TRANSLATE_TO_MANDARIN_PROMPT with the input text.
-      2. POST the prompt to Ollama with stream=False.
-      3. Extract the response text from the JSON payload.
-      4. Strip whitespace and return the Mandarin translation.
+      2. Prepend optional conversation context to the prompt.
+      3. POST the prompt to Ollama with stream=False.
+      4. Extract the response text from the JSON payload.
+      5. Strip whitespace and return the Mandarin translation.
 
     Args:
         english_text (str): English reply spoken by the owner.
                             Example: "I already ate, thank you."
+        context (str): Optional recent exchange history from
+                       conversation_memory.get_context_block().
+                       Pass "" (default) for no context.
+                       Example: "Recent conversation context:\n[1] ..."
 
     Returns:
         str:  Mandarin translation. Example: "我已经吃过了，谢谢。"
@@ -89,7 +109,14 @@ def translate_to_mandarin(english_text: str) -> str | None:
         if mandarin:
             generate_mandarin_audio(mandarin)
     """
-    prompt = config.TRANSLATE_TO_MANDARIN_PROMPT.format(text=english_text)
+    base_prompt = config.TRANSLATE_TO_MANDARIN_PROMPT.format(text=english_text)
+
+    # Prepend recent conversation context if available.
+    if context:
+        prompt = context + "\n\n" + base_prompt
+    else:
+        prompt = base_prompt
+
     return _call_ollama(prompt, label="English→Mandarin")
 
 

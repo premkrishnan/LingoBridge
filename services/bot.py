@@ -32,12 +32,13 @@
 #   - services/tts.py        → generate_mandarin_audio
 #   - config.py → TELEGRAM_BOT_TOKEN, TEMP_INPUT_AUDIO, TEMP_REPLY_AUDIO
 #   - utils/logger.py
+#   - utils/conversation_memory → add_turn, clear_memory, get_context_block
 #
 # CALLED BY:
 #   - Run directly: python services/bot.py
 #
 # AUTHOR: Clip Project
-# LAST UPDATED: 2026-05-24 (rev 8)
+# LAST UPDATED: 2026-05-24 (rev 9)
 # ============================================================
 
 import subprocess
@@ -58,6 +59,7 @@ from services.ollama_warmup import start_warmup_scheduler, stop_warmup_scheduler
 from utils.thinking_indicator import ThinkingIndicator
 from services.transcribe import Transcriber
 from services.translate import translate_to_english, translate_to_mandarin
+from utils.conversation_memory import add_turn, clear_memory, get_context_block
 from services.tts import generate_mandarin_audio
 from utils.logger import get_logger
 
@@ -189,6 +191,11 @@ async def cmd_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         User sends /end → bot clears state and deletes temp files.
     """
     chat_id = update.effective_chat.id
+
+    # Reset memory so MIL's next conversation has no stale context
+    # from a previous session bleeding in.
+    clear_memory()
+
     _user_states[chat_id] = IDLE
 
     logger.info("Session ended for chat %s → %s", chat_id, IDLE)
@@ -463,8 +470,11 @@ async def _run_forward_pipeline(
             return
 
         # Step 4: Translate Mandarin → English.
+        # Pass recent exchanges as context so Qwen3 can resolve
+        # pronouns and references from earlier in the conversation.
         logger.info("Translating to English: %s", transcript)
-        english = translate_to_english(transcript)
+        context_block = get_context_block()
+        english = translate_to_english(transcript, context=context_block)
 
         if english is None:
             try:
@@ -472,6 +482,9 @@ async def _run_forward_pipeline(
             except Exception as e:
                 logger.warning("Failed to send translation-failed reply: %s", e)
             return
+
+        # Store this exchange so future translations have context.
+        add_turn(mandarin=transcript, english=english)
 
     # Step 7: Build and send the reply with both languages.
     # Indicator has stopped — text send is fast and needs no indicator.

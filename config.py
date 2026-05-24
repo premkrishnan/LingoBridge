@@ -191,6 +191,11 @@ TELEGRAM_ACTION_SPEAKING = "upload_voice"
 # Prompts are intentionally strict to prevent Qwen3 from adding
 # extra sentences beyond the source text.
 
+# Number of recent exchanges to pass to Qwen3 as context.
+# Higher = better pronoun resolution but longer prompts.
+# 3 is enough for a typical family conversation.
+CONVERSATION_MEMORY_MAX_TURNS = 3
+
 TRANSLATE_TO_ENGLISH_PROMPT = (
     "You are a translator. Translate ONLY the exact text provided. "
     "Do not add explanations, extra sentences, greetings, or anything "
