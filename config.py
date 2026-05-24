@@ -20,7 +20,7 @@
 #   - All service and utility modules
 #
 # AUTHOR: Clip Project
-# LAST UPDATED: 2026-05-25
+# LAST UPDATED: 2026-05-24
 # ============================================================
 
 import os
@@ -108,11 +108,20 @@ OLLAMA_API_URL = "http://localhost:11434/api/generate"
 # family conversation. 8b is faster but 14b fits comfortably in
 # 24GB unified RAM on M4.
 OLLAMA_MODEL = "qwen3:14b"
+OLLAMA_URL   = "http://localhost:11434"   # ← add this line for health checks and warmup pings.
 
 # qwen3:14b needs up to 90s on first load into RAM. Subsequent
 # calls are 1-3s once model is warm. Increase to 120 to safely
 # cover cold start.
 OLLAMA_TIMEOUT_SECS = 120
+
+# How long (seconds) to wait for Ollama warmup ping on startup.
+# First cold-start can take 30-60s. Set this higher to be safe.
+OLLAMA_WARMUP_TIMEOUT_SECONDS = 90
+
+# How often (minutes) the scheduler re-pings Ollama to keep
+# the model loaded. Ollama unloads after ~5 min of inactivity.
+OLLAMA_WARMUP_INTERVAL_MINUTES = 4
 
 
 # ── TTS (Mandarin Text-to-Speech) ─────────────────────────────
@@ -166,36 +175,32 @@ MY_WHATSAPP_NUMBER   = os.getenv("MY_WHATSAPP_NUMBER")
 # If None, bot.py will fail with a clear error at startup.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+# Chat action shown while bot is transcribing/translating.
+# Displays "typing…" indicator so owner knows the bot is working.
+TELEGRAM_ACTION_TRANSLATING = "typing"
+
+# Chat action shown while bot is sending the TTS voice note.
+# Displays "sending voice…" indicator during audio upload.
+TELEGRAM_ACTION_SPEAKING = "upload_voice"
+
 
 # ── Translation prompts ───────────────────────────────────────
 # Stored here so prompt wording can be tuned without touching
-# service code. Both prompts start with /no_think to disable
-# Qwen3's reasoning mode, which adds 5-8s latency for no benefit.
+# service code. Thinking mode is disabled via "think": False in
+# the Ollama payload (translate.py) — no /no_think prefix needed.
+# Prompts are intentionally strict to prevent Qwen3 from adding
+# extra sentences beyond the source text.
 
-TRANSLATE_TO_ENGLISH_PROMPT = """
-/no_think
-You are translating a spoken message from a Chinese mother-in-law
-to her English-speaking son-in-law. The conversation is personal,
-warm, and family-oriented — not formal or business language.
+TRANSLATE_TO_ENGLISH_PROMPT = (
+    "You are a translator. Translate ONLY the exact text provided. "
+    "Do not add explanations, extra sentences, greetings, or anything "
+    "not in the original. Output only the translation, nothing else.\n\n"
+    "Translate this Mandarin Chinese text to English:\n{text}"
+)
 
-Translate the following Mandarin Chinese text into natural,
-conversational English. Keep the tone warm and natural.
-Preserve questions as questions. Do not add explanations.
-Return only the translated English text, nothing else.
-
-Mandarin text: {mandarin_text}
-"""
-
-TRANSLATE_TO_MANDARIN_PROMPT = """
-/no_think
-You are translating a spoken message from an English-speaking
-son-in-law to his Chinese mother-in-law. The conversation is
-personal, warm, and family-oriented.
-
-Translate the following English text into natural, conversational
-Simplified Mandarin Chinese (普通话). Use respectful but warm
-language appropriate for speaking to an elder family member.
-Do not add pinyin. Return only the Mandarin Chinese text, nothing else.
-
-English text: {english_text}
-"""
+TRANSLATE_TO_MANDARIN_PROMPT = (
+    "You are a translator. Translate ONLY the exact text provided. "
+    "Do not add explanations, extra sentences, or anything not in "
+    "the original. Output only the translation, nothing else.\n\n"
+    "Translate this English text to Mandarin Chinese:\n{text}"
+)

@@ -37,7 +37,7 @@
 #   - Run directly: python services/bot.py
 #
 # AUTHOR: Clip Project
-# LAST UPDATED: 2026-05-25 (rev 6)
+# LAST UPDATED: 2026-05-24 (rev 8)
 # ============================================================
 
 import subprocess
@@ -54,6 +54,8 @@ from telegram.ext import (
 )
 
 import config
+from services.ollama_warmup import start_warmup_scheduler, stop_warmup_scheduler
+from utils.thinking_indicator import ThinkingIndicator
 from services.transcribe import Transcriber
 from services.translate import translate_to_english, translate_to_mandarin
 from services.tts import generate_mandarin_audio
@@ -414,13 +416,14 @@ async def _run_forward_pipeline(
 
     Steps:
       1. Download the .ogg voice file from Telegram to temp/input.ogg.
-      2. Transcribe with Whisper — returns None if not Mandarin.
-      3. If None → reply "No Mandarin detected". State stays WAITING_FOR_MIL.
-      4. Translate Mandarin → English via Ollama.
-      5. If None → reply "Translation failed". State stays WAITING_FOR_MIL.
-      6. Send transcript + translation text to the owner.
-      7. Attach inline buttons: [Reply in Mandarin] and [Try again].
-      8. Delete temp audio file (privacy).
+      2. Show "typing..." indicator while transcription + translation run.
+      3. Transcribe with Whisper — returns None if not Mandarin.
+      4. If None → reply "No Mandarin detected". Indicator stops on exit.
+      5. Translate Mandarin → English via Ollama.
+      6. If None → reply "Translation failed". Indicator stops on exit.
+      7. Send transcript + translation text to the owner.
+      8. Attach inline buttons: [Reply in Mandarin] and [Try again].
+      9. Delete temp audio file (privacy).
 
     Args:
         update (Update): Incoming Telegram update containing a voice message.
@@ -439,26 +442,39 @@ async def _run_forward_pipeline(
     if not downloaded:
         return
 
-    # Step 2: Transcribe — faster-whisper accepts .ogg natively.
-    logger.info("Transcribing Mandarin voice from %s...", ogg_path)
-    transcript = _get_transcriber().transcribe_audio(ogg_path)
+    # Show "typing..." in Telegram while Whisper + Ollama are working.
+    # Without this, the user sees nothing for 10-30 seconds and thinks
+    # the bot has crashed.
+    async with ThinkingIndicator(
+        context, update.effective_chat.id, config.TELEGRAM_ACTION_TRANSLATING
+    ):
+        # Step 2: Transcribe — faster-whisper accepts .ogg natively.
+        logger.info("Transcribing Mandarin voice from %s...", ogg_path)
+        transcript = _get_transcriber().transcribe_audio(ogg_path)
 
-    _delete_temp_file(ogg_path)
+        _delete_temp_file(ogg_path)
 
-    # Step 3: Reject if not Mandarin.
-    if transcript is None:
-        await update.message.reply_text("⚠️ No Mandarin detected. Try again.")
-        return
+        # Step 3: Reject if not Mandarin. Indicator stops when block exits.
+        if transcript is None:
+            try:
+                await update.message.reply_text("⚠️ No Mandarin detected. Try again.")
+            except Exception as e:
+                logger.warning("Failed to send no-Mandarin reply: %s", e)
+            return
 
-    # Step 4: Translate Mandarin → English.
-    logger.info("Translating to English: %s", transcript)
-    english = translate_to_english(transcript)
+        # Step 4: Translate Mandarin → English.
+        logger.info("Translating to English: %s", transcript)
+        english = translate_to_english(transcript)
 
-    if english is None:
-        await update.message.reply_text("⚠️ Translation failed. Try again.")
-        return
+        if english is None:
+            try:
+                await update.message.reply_text("⚠️ Translation failed. Try again.")
+            except Exception as e:
+                logger.warning("Failed to send translation-failed reply: %s", e)
+            return
 
-    # Step 6: Build and send the reply with both languages.
+    # Step 7: Build and send the reply with both languages.
+    # Indicator has stopped — text send is fast and needs no indicator.
     reply_text = (
         "她说 (She said):\n"
         f"🇨🇳 {transcript}\n"
@@ -495,14 +511,16 @@ async def _run_reverse_pipeline(
       3. If None → reply error. State stays WAITING_FOR_REPLY.
       3b. Reject if confidence < 0.4 or language not in ("en", "zh").
           State stays WAITING_FOR_REPLY so owner can try again.
-      4. Translate English → Mandarin via Ollama.
-      5. If None → reply error. State stays WAITING_FOR_REPLY.
-      6. Generate Mandarin TTS audio (.aiff on Mac).
-      7. If None → send text only. Reset state to WAITING_FOR_MIL.
-      8. Convert .aiff → .m4a via afconvert.
-      9. If m4a returned → send_audio() + text with Mandarin. Reset state.
-      10. If conversion failed → send text only. Reset state.
-      11. Delete all temp audio files (privacy).
+      4. Show "typing..." indicator while Ollama translates.
+      5. Translate English → Mandarin via Ollama.
+      6. If None → reply error. Indicator stops on exit. State stays WAITING_FOR_REPLY.
+      7. Show "upload_voice..." indicator while TTS generates + audio sends.
+      8. Generate Mandarin TTS audio (.aiff on Mac).
+      9. If None → send text only. Reset state to WAITING_FOR_MIL.
+      10. Convert .aiff → .m4a via afconvert.
+      11. If m4a returned → send_audio() + text with Mandarin. Reset state.
+      12. If conversion failed → send text only. Reset state.
+      13. Delete all temp audio files (privacy).
 
     Args:
         update (Update): Incoming Telegram update containing a voice message.
@@ -552,17 +570,21 @@ async def _run_reverse_pipeline(
         _user_states[chat_id] = WAITING_FOR_REPLY
         return
 
-    # Step 4: Translate English → Mandarin.
-    logger.info("Translating to Mandarin: %s", english_text)
-    mandarin_text = translate_to_mandarin(english_text)
+    # Show "typing..." in Telegram while Ollama translates.
+    # Without this, the user sees nothing during the 5-15s translation.
+    async with ThinkingIndicator(
+        context, update.effective_chat.id, config.TELEGRAM_ACTION_TRANSLATING
+    ):
+        # Step 5: Translate English → Mandarin.
+        logger.info("Translating to Mandarin: %s", english_text)
+        mandarin_text = translate_to_mandarin(english_text)
 
-    if mandarin_text is None:
-        await update.message.reply_text("⚠️ Translation failed. Try again.")
-        return
-
-    # Step 6: Generate Mandarin TTS audio (.aiff on Mac).
-    logger.info("Generating Mandarin audio...")
-    aiff_path = generate_mandarin_audio(mandarin_text)
+        if mandarin_text is None:
+            try:
+                await update.message.reply_text("⚠️ Translation failed. Try again.")
+            except Exception as e:
+                logger.warning("Failed to send translation-failed reply: %s", e)
+            return
 
     reply_text = (
         "Your reply in Mandarin:\n"
@@ -570,31 +592,45 @@ async def _run_reverse_pipeline(
         "👆 Play this to MIL"
     )
 
-    if aiff_path is None:
-        logger.warning("TTS failed — sending Mandarin text only.")
-        await update.message.reply_text(
-            "⚠️ Audio generation failed. Mandarin text only:\n\n" + reply_text
-        )
-        _user_states[chat_id] = WAITING_FOR_MIL
-        return
+    # Show "sending voice..." while TTS generates audio and uploads it.
+    # Indicator stops automatically when the block exits for any reason.
+    async with ThinkingIndicator(
+        context, update.effective_chat.id, config.TELEGRAM_ACTION_SPEAKING
+    ):
+        # Step 8: Generate Mandarin TTS audio (.aiff on Mac).
+        logger.info("Generating Mandarin audio...")
+        aiff_path = generate_mandarin_audio(mandarin_text)
 
-    # Step 8: Convert .aiff → .m4a for Telegram.
-    # send_audio() accepts M4A/AAC natively. OGG/OPUS and MP3 are not
-    # supported by afconvert on macOS Tahoe, so M4A is the correct target.
-    m4a_path = _convert_aiff_to_m4a(aiff_path)
+        if aiff_path is None:
+            logger.warning("TTS failed — sending Mandarin text only.")
+            try:
+                await update.message.reply_text(
+                    "⚠️ Audio generation failed. Mandarin text only:\n\n" + reply_text
+                )
+            except Exception as e:
+                logger.warning("Failed to send TTS-failed reply: %s", e)
+            _user_states[chat_id] = WAITING_FOR_MIL
+            return
 
-    # Step 9–10: Send audio + text, or text only if conversion failed.
-    if m4a_path is not None:
-        await _send_audio_reply(update, context, str(m4a_path))
-        await update.message.reply_text(reply_text)
-        _delete_temp_file(str(m4a_path))
-    else:
-        logger.warning("M4A conversion failed — sending Mandarin text only.")
-        await update.message.reply_text(
-            "🔊 Audio conversion failed — text only:\n\n" + reply_text
-        )
+        # Step 10: Convert .aiff → .m4a for Telegram.
+        # send_audio() accepts M4A/AAC natively. OGG/OPUS and MP3 are not
+        # supported by afconvert on macOS Tahoe, so M4A is the correct target.
+        m4a_path = _convert_aiff_to_m4a(aiff_path)
 
-    # Step 11: Clean up original .aiff and reset state.
+        # Step 11–12: Send audio, or text only if conversion failed.
+        if m4a_path is not None:
+            await _send_audio_reply(update, context, str(m4a_path))
+            _delete_temp_file(str(m4a_path))
+        else:
+            logger.warning("M4A conversion failed — sending Mandarin text only.")
+            try:
+                await update.message.reply_text(
+                    "🔊 Audio conversion failed — text only:\n\n" + reply_text
+                )
+            except Exception as e:
+                logger.warning("Failed to send audio-failed reply: %s", e)
+
+    # Step 13: Clean up original .aiff and reset state.
     _delete_temp_file(aiff_path)
     _user_states[chat_id] = WAITING_FOR_MIL
     logger.info("Reverse pipeline complete — chat %s reset to %s", chat_id, WAITING_FOR_MIL)
@@ -893,10 +929,12 @@ def build_application() -> Application:
     Steps:
       1. Validate TELEGRAM_BOT_TOKEN is set.
       2. Create the Application via the builder pattern.
-      3. Register CommandHandlers for all commands.
-      4. Register a single MessageHandler (voice) that dispatches by state.
-      5. Register CallbackQueryHandlers for inline buttons.
-      6. Return the configured application.
+      3. Attach post_init to start the Ollama warmup scheduler on startup.
+      4. Attach post_shutdown to stop the scheduler on clean exit.
+      5. Register CommandHandlers for all commands.
+      6. Register a single MessageHandler (voice) that dispatches by state.
+      7. Register CallbackQueryHandlers for inline buttons.
+      8. Return the configured application.
 
     Args:
         None
@@ -941,6 +979,18 @@ def build_application() -> Application:
         .build()
     )
     # --- END EXTERNAL CALL ---
+
+    async def post_init(application: Application) -> None:
+        """Called once when the bot starts. Kicks off Ollama warmup."""
+        # Start warming up Ollama immediately so the first translation is fast.
+        start_warmup_scheduler()
+
+    async def post_shutdown(application: Application) -> None:
+        """Called once when the bot stops cleanly."""
+        stop_warmup_scheduler()
+
+    app.post_init     = post_init
+    app.post_shutdown = post_shutdown
 
     # Command handlers — each is independent, no ConversationHandler needed.
     app.add_handler(CommandHandler("start", cmd_start))

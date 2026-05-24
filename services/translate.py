@@ -27,7 +27,7 @@
 #   - main.py → forward_pipeline(), reply_pipeline()
 #
 # AUTHOR: Clip Project
-# LAST UPDATED: 2026-05-28
+# LAST UPDATED: 2026-05-24
 # ============================================================
 
 import requests
@@ -62,9 +62,7 @@ def translate_to_english(mandarin_text: str) -> str | None:
         if english:
             send_whatsapp_text(english)
     """
-    prompt = config.TRANSLATE_TO_ENGLISH_PROMPT.format(
-        mandarin_text=mandarin_text
-    )
+    prompt = config.TRANSLATE_TO_ENGLISH_PROMPT.format(text=mandarin_text)
     return _call_ollama(prompt, label="Mandarin→English")
 
 
@@ -91,9 +89,7 @@ def translate_to_mandarin(english_text: str) -> str | None:
         if mandarin:
             generate_mandarin_audio(mandarin)
     """
-    prompt = config.TRANSLATE_TO_MANDARIN_PROMPT.format(
-        english_text=english_text
-    )
+    prompt = config.TRANSLATE_TO_MANDARIN_PROMPT.format(text=english_text)
     return _call_ollama(prompt, label="English→Mandarin")
 
 
@@ -122,16 +118,15 @@ def _call_ollama(prompt: str, label: str) -> str | None:
     Example:
         result = _call_ollama(formatted_prompt, "Mandarin→English")
     """
-    # The /no_think prefix in both prompt templates is critical.
-    # Qwen3's built-in reasoning mode "thinks" before answering,
-    # adding 5-8 seconds of silent latency with no quality gain for
-    # straightforward translation tasks. /no_think disables it entirely,
-    # cutting response time from ~8s to ~1-2s — essential for real-time
-    # face-to-face conversation.
+    # "think": False disables Qwen3's built-in reasoning mode, which
+    # deliberates before answering and adds 5-8s of silent latency with
+    # no quality benefit for translation. The Ollama API accepts this as
+    # a top-level field — no /no_think prompt prefix needed.
     payload = {
-        "model": config.OLLAMA_MODEL,
+        "model":  config.OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
+        "think":  False,
     }
 
     logger.info("Calling Ollama (%s) [%s]...", config.OLLAMA_MODEL, label)
