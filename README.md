@@ -1,4 +1,4 @@
-# 🌉 LingoBridge
+# 🌉 LingoBridge (Updated until Phase 1)
 
 **Real-time Mandarin ↔ English translation for face-to-face family conversations.**
 
